@@ -3,6 +3,7 @@ const fsLib = require('fs');
 
 const _ = require('lodash');
 const isPath = require('is-valid-path');
+const beautify = require('js-beautify').html;
 
 const TEMPLATE_BASE = '../DIM/app/';
 
@@ -161,8 +162,12 @@ export default function transformer(file, api, options) {
         templateProp.key.name = 'templateUrl';
       }
 
+      const prettyHtml = beautify(templateString, {
+        indent_size: 2,
+      });
+
       // Write out the template
-      fsLib.writeFileSync(templatePath, templateString);
+      fsLib.writeFileSync(templatePath, prettyHtml);
     })
     .toSource();
 }
