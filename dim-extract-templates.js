@@ -6,8 +6,10 @@ const isPath = require('is-valid-path');
 
 const TEMPLATE_BASE = '../DIM/app/';
 
-function log(...args) {
-  console.log(' -', ...args);
+let log;
+
+function _log(file, ...args) {
+  console.log(' -', ...args, `(in ${file.path})`);
 }
 
 function makePathUrl(relTemplatePath) {
@@ -16,28 +18,44 @@ function makePathUrl(relTemplatePath) {
 }
 
 function transformArray(j, templatePath, prop, value) {
-  log('Transforming template as array');
+  // log('Transforming template as array');
   const templateString = value.elements.reduce((acc, ele) => {
-    if (ele.type !== 'Literal') {
-      throw new Error('Cannot transform template (as array) with element of type ' + ele.type)
+    let templateStringFrag;
+
+    switch (ele.type) {
+      case 'Literal':
+        templateStringFrag = ele.rawValue;
+        break;
+
+      case 'BinaryExpression':
+        // this only works for a simple 'foo' + 'bar'. It doesnt work recursively for
+        // things like 'foo' + 'bar' + 'baz', but that doesnt appear in DIM
+        if (ele.left.type === 'Literal' && ele.right.type === 'Literal') {
+          templateStringFrag = ele.left.rawValue + '\n' + ele.right.rawValue;
+          break;
+        }
+
+      default:
+        throw new Error('Cannot transform template (as array) with element of type ' + ele.type + `(${templatePath})`)
     }
 
-    return acc += '\n' + ele.rawValue
+    return acc += '\n' + templateStringFrag;
   }, '');
 
 
   j(prop)
-    .find('CallExpression') // once again, assuming this is like [...].join()
+    .find('CallExpression') // assuming this is like [...].join()
     .replaceWith(makePathUrl(templatePath))
 
   return templateString;
 }
 
 function transformTemplateLiteral(j, templatePath, prop, value) {
-  log('Transforming template as template string');
+  // log('Transforming template as template string');
 
   if (value.quasis.length !== 1) {
-    throw new Error('Cannot transform template (as template string) with interpolated variables');
+    log('Cannot transform template (as template string) with interpolated variables');
+    return null;
   }
 
   const templateString = value.quasis[0].value.cooked;
@@ -50,7 +68,7 @@ function transformTemplateLiteral(j, templatePath, prop, value) {
 }
 
 function transformLiteral(j, templatePath, prop, value) {
-  log('Transforming template as literal');
+  // log('Transforming template as literal');
 
   const templateString = value.raw;
 
@@ -61,28 +79,37 @@ function transformLiteral(j, templatePath, prop, value) {
   return templateString;
 }
 
+function findProp(objExp, propName) {
+  return objExp.value.properties.find((prop) => {
+    return prop.key.name === propName;
+  });
+}
+
 let counters = {};
-export default function transformer(file, api) {
+function incrementFileCounter(filePath) {
+  if (counters[filePath]) {
+    counters[filePath] += 1;
+  } else {
+    counters[filePath] = 1;
+  }
+}
+
+export default function transformer(file, api, options) {
   const j = api.jscodeshift;
+
+  log = _log.bind(null, file);
 
   return j(file.source)
     .find(j.ObjectExpression)
     // .filter(path => _.get(path, 'node.argument.type') === 'ObjectExpression')
     .forEach((path, pathIndex) => {
 
-      var templateProp = path.value.properties.find((prop) => {
-        return prop.key.name === 'template';
-      });
+      var templateProp = findProp(path, 'template');
+      var plainProp = findProp(path, 'plain');
 
-      if (!templateProp) {
-        return;
-      }
+      if (!templateProp) { return }
 
-      if (counters[file.path]) {
-        counters[file.path] += 1;
-      } else {
-        counters[file.path] = 1;
-      }
+      incrementFileCounter(file.path);
 
       const count = counters[file.path];
       const parsedPath = pathLib.parse(file.path);
@@ -115,14 +142,24 @@ export default function transformer(file, api) {
           break;
 
         default:
-          throw new Error(`Don't know how to transform template of type ${templateValue.type} yet`)
+          log(`Don't know how to transform template of type ${templateValue.type} yet`)
       }
 
       // Quit now if we didnt transform a template
       if (!templateString) { return }
 
       // update the key
-      templateProp.key.name = 'templateUrl';
+      if (plainProp) {
+        // Template is in a ngDialog call, so we need to remove plain: true
+        j(path)
+          .find(j.Property)
+          .filter(prop => prop.value.key.name === 'plain')
+          .remove();
+
+      } else {
+        // Change from 'template' to 'templateUrl'
+        templateProp.key.name = 'templateUrl';
+      }
 
       // Write out the template
       fsLib.writeFileSync(templatePath, templateString);
